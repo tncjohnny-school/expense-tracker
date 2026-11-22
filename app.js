@@ -59,12 +59,17 @@ document.addEventListener('DOMContentLoaded', () => {
   updateSyncBadge();
   renderAll();
 
-  // 只有在第一次造訪（從未初始化過）時，才載入預設示範資料
-  const hasInitialized = localStorage.getItem(STORAGE_INIT_KEY);
-  if (!hasInitialized) {
-    localStorage.setItem(STORAGE_INIT_KEY, 'true');
-    if (expenses.length === 0) {
-      loadDemoData(false);
+  // 若有設定 Google Apps Script，網頁開啟時自動在背景同步最新的雲端試算表資料
+  if (cloudConfig.mode === 'gas' && cloudConfig.gasUrl) {
+    fetchCloudData(true);
+  } else {
+    // 只有在第一次造訪（從未初始化過）且未串接雲端時，才載入預設示範資料
+    const hasInitialized = localStorage.getItem(STORAGE_INIT_KEY);
+    if (!hasInitialized) {
+      localStorage.setItem(STORAGE_INIT_KEY, 'true');
+      if (expenses.length === 0) {
+        loadDemoData(false);
+      }
     }
   }
 });
@@ -283,14 +288,18 @@ async function syncToCloud(item) {
 // ====================================================================
 // 從 Google Apps Script 讀取全量歷史資料 (雙向同步)
 // ====================================================================
-async function fetchCloudData() {
+async function fetchCloudData(isSilent = false) {
   if (!cloudConfig.gasUrl) {
-    showToast('尚未設定 Google Apps Script 網址！', 'error');
-    openSettingsModal();
+    if (!isSilent) {
+      showToast('尚未設定 Google Apps Script 網址！', 'error');
+      openSettingsModal();
+    }
     return;
   }
 
-  showToast('正在從 Google 試算表同步資料中...', 'info');
+  if (!isSilent) {
+    showToast('正在從 Google 試算表同步資料中...', 'info');
+  }
 
   try {
     const res = await fetch(cloudConfig.gasUrl);
@@ -298,7 +307,7 @@ async function fetchCloudData() {
 
     if (result && result.success && Array.isArray(result.data)) {
       if (result.data.length === 0) {
-        showToast('Google 試算表連線成功，目前試算表無資料。', 'info');
+        if (!isSilent) showToast('Google 試算表連線成功，目前試算表無資料。', 'info');
         return;
       }
 
@@ -311,15 +320,20 @@ async function fetchCloudData() {
         note: item.note || ''
       }));
 
+      localStorage.setItem(STORAGE_INIT_KEY, 'true');
       saveData();
       renderAll();
-      showToast(`🎉 成功同步 ${result.data.length} 筆 Google 試算表資料！`, 'success');
+      if (!isSilent) {
+        showToast(`🎉 成功同步 ${result.data.length} 筆 Google 試算表資料！`, 'success');
+      }
     } else {
-      showToast('讀取失敗：' + (result.error || '回傳格式異常'), 'error');
+      if (!isSilent) showToast('讀取失敗：' + (result.error || '回傳格式異常'), 'error');
     }
   } catch (err) {
     console.error('GAS 讀取錯誤:', err);
-    showToast('連線失敗，請確認 Web App 是否已設定為「任何人」可存取。', 'error');
+    if (!isSilent) {
+      showToast('連線失敗，請確認 Web App 是否已設定為「任何人」可存取。', 'error');
+    }
   }
 }
 
@@ -808,13 +822,42 @@ function saveConfig() {
 }
 
 function loadConfig() {
+  // 1. 若有 config.js 預設設定，先載入預設值
+  if (window.DEFAULT_CONFIG) {
+    if (window.DEFAULT_CONFIG.gasUrl) cloudConfig.gasUrl = window.DEFAULT_CONFIG.gasUrl;
+    if (window.DEFAULT_CONFIG.formUrl) cloudConfig.formUrl = window.DEFAULT_CONFIG.formUrl;
+    if (window.DEFAULT_CONFIG.formEntries) {
+      cloudConfig.formEntries = Object.assign(cloudConfig.formEntries, window.DEFAULT_CONFIG.formEntries);
+    }
+  }
+
+  // 2. 嘗試從 LocalStorage 讀取（使用者若在前端介面手動覆蓋設定）
   try {
     const raw = localStorage.getItem(STORAGE_CONFIG_KEY);
     if (raw) {
-      cloudConfig = Object.assign(cloudConfig, JSON.parse(raw));
+      const stored = JSON.parse(raw);
+      if (stored.gasUrl) cloudConfig.gasUrl = stored.gasUrl;
+      if (stored.formUrl) cloudConfig.formUrl = stored.formUrl;
+      if (stored.mode) cloudConfig.mode = stored.mode;
+      if (stored.formEntries) {
+        cloudConfig.formEntries = Object.assign(cloudConfig.formEntries, stored.formEntries);
+      }
     }
   } catch (e) {
     console.error('讀取設定失敗:', e);
+  }
+
+  // 3. 支援 URL 參數快速設定 (例如: https://xxx.github.io/?gas=https://script.google.com/...)
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const gasParam = params.get('gas');
+    if (gasParam) {
+      cloudConfig.gasUrl = decodeURIComponent(gasParam);
+      cloudConfig.mode = 'gas';
+      saveConfig();
+    }
+  } catch (e) {
+    // 忽略 URL 參數讀取異常
   }
 }
 

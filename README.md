@@ -82,12 +82,32 @@ python -m http.server 8080
 
 ---
 
+## 🚀 上傳至 GitHub Pages (免重複設定技巧)
+
+上傳到 GitHub Pages 後，如果只在瀏覽器介面手動貼網址，設定只會儲存在「該瀏覽器的 LocalStorage」中。若您換了手機、用 LINE 內嵌瀏覽器開啟或清除快取，就必須重新設定。
+
+### 🌟 終極一勞永逸做法：填寫 `config.js`
+
+1. 打開專案中的 `config.js`。
+2. 將您的 Google Apps Script 網址填入 `gasUrl`：
+   ```javascript
+   window.DEFAULT_CONFIG = {
+     gasUrl: "https://script.google.com/macros/s/AKfycb.../exec",
+     ...
+   };
+   ```
+3. 上傳（Push）到 GitHub。
+4. **完成！** 無論在任何手機、平板、電腦打開您的 GitHub Pages 網址，系統都會**自動連線並在背景同步最新試算表資料**，完全不需要再次輸入設定！
+
+---
+
 ## 📁 檔案結構說明
 
 ```
 expense-tracker/
 ├── index.html              # 主介面 (記帳表單、月度切換、統計數據、圓餅圖、清單)
 ├── style.css               # 現代綠色金錢主題美化、六大分類專屬配色、RWD 響應式佈局
+├── config.js               # 全域預設設定檔 (固定 Google 試算表 Web App URL)
 ├── app.js                  # 核心邏輯 (Chart.js 繪圖、月度計算、LocalStorage、Google API)
 ├── google-apps-script.js   # 複製到 Google 試算表 Apps Script 的雙向後端程式碼
 └── README.md               # 專案說明與串接操作指引
