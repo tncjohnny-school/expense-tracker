@@ -20,12 +20,14 @@ const CATEGORY_KEYS = ['食', '衣', '住', '行', '育', '樂'];
 const STORAGE_DATA_KEY = 'EXPENSE_TRACKER_DATA_V1';
 const STORAGE_CONFIG_KEY = 'EXPENSE_TRACKER_CONFIG_V1';
 const STORAGE_INIT_KEY = 'EXPENSE_TRACKER_INITIALIZED_V1';
+const STORAGE_DELETED_KEY = 'EXPENSE_TRACKER_DELETED_KEYS_V1';
 
 // 3. 全域狀態
 let expenses = [];
 let chartInstance = null;
 let chartType = 'doughnut'; // 'doughnut' or 'pie'
 let selectedCategory = '食';
+let deletedKeys = new Set(); // 已刪除紀錄黑名單 (防止重新整理時拉回)
 
 // 當前檢視的年月 (YYYY-MM)
 let currentYearMonth = getTodayString().slice(0, 7);
@@ -48,6 +50,7 @@ let cloudConfig = {
 // ====================================================================
 document.addEventListener('DOMContentLoaded', () => {
   loadConfig();
+  loadDeletedKeys();
   loadData();
   initDateInputs();
   initCategorySelector();
@@ -320,12 +323,20 @@ async function fetchCloudData(isSilent = false) {
         return;
       }
 
-      // 合併雲端資料並標準化日期與分類
-      expenses = result.data.map(item => {
+      // 合併雲端資料（自動排除本地已刪除的紀錄，並標準化日期與分類）
+      const validRows = result.data.filter(item => {
+        const cleanCat = normalizeCategoryClient(item.category);
+        const cleanDate = normalizeDateClient(item.date);
+        const itemKey = `${cleanDate}_${cleanCat}_${Number(item.amount) || 0}_${(item.note || '').trim()}`;
+        return !deletedKeys.has(itemKey) && !deletedKeys.has(item.id);
+      });
+
+      expenses = validRows.map(item => {
         const cleanCat = normalizeCategoryClient(item.category);
         const cleanDate = normalizeDateClient(item.date);
         return {
           id: item.id || ('gs_' + Math.random().toString(36).substr(2, 9)),
+          rowIndex: item.rowIndex || null,
           date: cleanDate,
           category: cleanCat,
           amount: Number(item.amount) || 0,
@@ -652,12 +663,79 @@ function renderHistoryList() {
 }
 
 function deleteExpense(id) {
-  if (confirm('確定要刪除這筆記帳紀錄嗎？')) {
-    expenses = expenses.filter(i => i.id !== id);
-    localStorage.setItem(STORAGE_INIT_KEY, 'true');
-    saveData();
-    renderAll();
-    showToast('已刪除該筆消費紀錄', 'info');
+  if (!confirm('確定要刪除這筆記帳紀錄嗎？')) return;
+
+  const targetIndex = expenses.findIndex(i => i.id === id);
+  if (targetIndex === -1) return;
+  const targetItem = expenses[targetIndex];
+
+  // 1. 加入已刪除黑名單 (保證重新整理時絕不會再次抓回)
+  const itemKey = getItemKey(targetItem);
+  deletedKeys.add(itemKey);
+  if (targetItem.id) deletedKeys.add(targetItem.id);
+  saveDeletedKeys();
+
+  // 2. 本機陣列移除並儲存
+  expenses.splice(targetIndex, 1);
+  localStorage.setItem(STORAGE_INIT_KEY, 'true');
+  saveData();
+  renderAll();
+  showToast('已刪除該筆消費紀錄', 'info');
+
+  // 3. 若有連線 Google 試算表，發送同步刪除通知
+  if (cloudConfig.mode === 'gas' && cloudConfig.gasUrl) {
+    try {
+      fetch(cloudConfig.gasUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action: 'delete',
+          rowIndex: targetItem.rowIndex || null,
+          date: targetItem.date,
+          category: targetItem.category,
+          amount: targetItem.amount,
+          note: targetItem.note
+        })
+      }).then(res => res.json()).then(result => {
+        if (result && result.success && result.deleted) {
+          showToast('☁️ 已同步從 Google 試算表移除該列！', 'success');
+        }
+      }).catch(err => {
+        console.warn('雲端刪除通知失敗:', err);
+      });
+    } catch (e) {
+      console.warn('發送刪除請求錯誤:', e);
+    }
+  }
+}
+
+// 輔助函式：產生唯一特徵 Key
+function getItemKey(item) {
+  if (!item) return '';
+  const d = normalizeDateClient(item.date);
+  const c = normalizeCategoryClient(item.category);
+  const a = Number(item.amount) || 0;
+  const n = (item.note || '').trim();
+  return `${d}_${c}_${a}_${n}`;
+}
+
+function saveDeletedKeys() {
+  try {
+    localStorage.setItem(STORAGE_DELETED_KEY, JSON.stringify(Array.from(deletedKeys)));
+  } catch (e) {
+    console.error('儲存刪除清單失敗:', e);
+  }
+}
+
+function loadDeletedKeys() {
+  try {
+    const raw = localStorage.getItem(STORAGE_DELETED_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      deletedKeys = new Set(Array.isArray(arr) ? arr : []);
+    }
+  } catch (e) {
+    deletedKeys = new Set();
   }
 }
 
@@ -759,6 +837,12 @@ function initModal() {
 
   document.getElementById('btn-clear-all').addEventListener('click', () => {
     if (confirm('警告：確定要清空所有記帳資料嗎？此操作無法還原！')) {
+      // 將當前所有紀錄加入已刪除清單
+      expenses.forEach(item => {
+        deletedKeys.add(getItemKey(item));
+        if (item.id) deletedKeys.add(item.id);
+      });
+      saveDeletedKeys();
       expenses = [];
       localStorage.setItem(STORAGE_INIT_KEY, 'true');
       saveData();
