@@ -246,13 +246,11 @@ function initForm() {
 async function syncToCloud(item) {
   if (cloudConfig.mode === 'gas' && cloudConfig.gasUrl) {
     try {
-      // Google Apps Script Web App POST
       fetch(cloudConfig.gasUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8' // GAS 建議用 text/plain 避免 CORS 預檢失敗
-        },
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
+          action: 'add',          // 明確指定操作類型，避免 GAS 誤判
           date: item.date,
           category: item.category,
           amount: item.amount,

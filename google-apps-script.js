@@ -1,110 +1,89 @@
 /**
  * ====================================================================
- * Google 試算表後端程式碼 (Google Apps Script) - 旗艦智慧統計修復版
+ * Google 試算表後端程式碼 (Google Apps Script) - 穩定修正版
  * ====================================================================
  * 
- * 💡 修正項目：
- * 1. 嚴格限定只讀取 A~F 欄（前 6 欄），徹底解決「右側統計看板被誤判為 0 元食類消費」的問題！
- * 2. 嚴格過濾無效列與金額 <= 0 的空白列，避免產生幽靈紀錄。
- * 3. 日期強化解析，避免解析出 Sun 或無效年月。
- * 4. 支援完整的增、查、刪、一鍵清空功能。
+ * 【本版修正】
+ * - 移除動態統計看板（防止看板資料被誤判為消費紀錄、防止清空後產生幽靈 0 元資料）
+ * - 讀取時嚴格只讀 A~F 欄「有金額」的列
+ * - 清空操作不再呼叫 ensureDashboard，避免殘留 H 欄干擾 getLastRow()
  * 
  * 【更新步驟】
- * 1. 打開 Google 試算表 -> 「擴充功能」 -> 「Apps Script」，將此程式碼整份覆蓋儲存。
- * 2. 點選右上角「部署」 -> 「管理部署作業」。
- * 3. 點選右上角鉛筆圖示（編輯） -> 版本選擇「新版本 (New Version)」 -> 點選「部署」完成！
+ * 1. 打開 Google 試算表 -> 「擴充功能」 -> 「Apps Script」，整份覆蓋儲存。
+ * 2. 點選「部署」-> 「管理部署作業」-> 鉛筆圖示 -> 版本選「新版本」-> 部署。
  */
 
 function doGet(e) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = getTargetSheet(ss);
-    
-    // 確保右側統計看板存在
-    ensureDashboard(sheet);
-    
-    const lastRow = sheet.getLastRow();
-    if (lastRow <= 1) {
-      return responseJSON({ 
-        success: true, 
+
+    // 只讀 A~F 欄，不用 getDataRange()，避免 H、I 欄看板被誤抓
+    const lastDataRow = getLastDataRow(sheet);
+    if (lastDataRow <= 1) {
+      return responseJSON({
+        success: true,
         sheetName: sheet.getName(),
         recordsCount: 0,
-        totalAmount: 0,
-        data: [] 
+        data: []
       });
     }
-    
-    // 關鍵修正：只抓取第 1 到 6 欄 (A~F 欄：時間戳記, 消費日期, 類別, 金額, 備註, 狀態)
-    // 絕不抓取第 8 欄 (H 欄) 以後的統計看板，避免看板被誤判成消費資料！
-    const maxCols = Math.min(sheet.getLastColumn(), 6);
-    const data = sheet.getRange(1, 1, lastRow, maxCols).getValues();
-    
-    // 第一列是標題列
+
+    const data = sheet.getRange(1, 1, lastDataRow, 6).getValues();
     const rawHeaders = data[0].map(h => String(h).trim());
     const headers = rawHeaders.map(h => h.toLowerCase());
-    
-    let dateIdx = headers.findIndex(h => (h.includes('消費日') || h.includes('日期') || h.includes('date')) && !h.includes('戳記'));
+
+    let dateIdx = headers.findIndex(h =>
+      (h.includes('消費日') || h.includes('日期') || h.includes('date')) && !h.includes('戳記')
+    );
     if (dateIdx === -1) {
       dateIdx = headers.findIndex(h => h.includes('時間') || h.includes('戳記') || h.includes('time'));
     }
-
-    const catIdx = headers.findIndex(h => h.includes('類別') || h.includes('分類') || h.includes('category') || h.includes('項目'));
-    const amtIdx = headers.findIndex(h => h.includes('金額') || h.includes('amount') || h.includes('花費') || h.includes('價錢') || h.includes('費用'));
-    const noteIdx = headers.findIndex(h => h.includes('備註') || h.includes('說明') || h.includes('note') || h.includes('品項') || h.includes('內容') || h.includes('名稱'));
+    const catIdx  = headers.findIndex(h => h.includes('類別') || h.includes('分類') || h.includes('category') || h.includes('項目'));
+    const amtIdx  = headers.findIndex(h => h.includes('金額') || h.includes('amount') || h.includes('花費') || h.includes('費用'));
+    const noteIdx = headers.findIndex(h => h.includes('備註') || h.includes('說明') || h.includes('note') || h.includes('品項') || h.includes('內容'));
     const statusIdx = headers.findIndex(h => h.includes('狀態') || h.includes('status'));
 
     const records = [];
-    let grandTotal = 0;
 
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
-      // 只要該列前幾欄皆為空，直接略過
+
+      // 若 A~E 欄全空，跳過
       if (row.slice(0, 5).every(cell => cell === '' || cell === null)) continue;
-      
-      // 檢查狀態：若已標記為刪除，則略過
+
+      // 跳過已刪除列
       const statusText = statusIdx !== -1 ? String(row[statusIdx] || '') : '';
-      if (statusText.includes('刪除') || statusText.includes('delete')) {
-        continue;
-      }
-      
-      let rawAmt = amtIdx !== -1 ? row[amtIdx] : 0;
-      let cleanAmt = String(rawAmt).replace(/[$,NT\s]/gi, '').replace(/,/g, '');
-      let amount = Number(cleanAmt) || 0;
+      if (statusText.includes('刪除')) continue;
 
-      // 關鍵防禦：若金額 <= 0 且沒有有效備註，視為無效空列，絕不加入！
-      let note = noteIdx !== -1 ? String(row[noteIdx] || '').trim() : '';
-      let rawDate = dateIdx !== -1 ? row[dateIdx] : row[0];
-      if (amount <= 0 && !note && !rawDate) {
-        continue;
-      }
-      
-      let formattedDate = normalizeDate(rawDate);
-      let rawCategory = catIdx !== -1 ? String(row[catIdx] || '').trim() : '';
-      let category = normalizeCategory(rawCategory);
+      // 解析金額，0 元直接跳過
+      const rawAmt = amtIdx !== -1 ? row[amtIdx] : 0;
+      const amount = Number(String(rawAmt).replace(/[$,NT\s]/gi, '')) || 0;
+      if (amount <= 0) continue;
 
-      if (!note) {
-        note = category ? `${category}類消費` : '日常消費';
-      }
-      
-      grandTotal += amount;
-      
+      const rawDate = dateIdx !== -1 ? row[dateIdx] : row[0];
+      const date = normalizeDate(rawDate);
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+
+      const rawCat = catIdx !== -1 ? String(row[catIdx] || '').trim() : '';
+      const category = normalizeCategory(rawCat);
+      const note = noteIdx !== -1 ? String(row[noteIdx] || '').trim() : '';
+
       records.push({
         id: 'gs_' + (i + 1),
         rowIndex: i + 1,
-        date: formattedDate,
+        date: date,
         category: category,
         amount: amount,
-        note: note
+        note: note || `${category}類消費`
       });
     }
 
-    return responseJSON({ 
-      success: true, 
+    return responseJSON({
+      success: true,
       sheetName: sheet.getName(),
       recordsCount: records.length,
-      totalAmount: grandTotal,
-      headers: rawHeaders,
-      data: records 
+      data: records
     });
   } catch (error) {
     return responseJSON({ success: false, error: error.toString() });
@@ -123,44 +102,60 @@ function doPost(e) {
     }
 
     const action = body.action || 'add';
-    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    const ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
 
-    ensureHeadersAndStatus(sheet);
+    // ----------------------------------------------------------------
+    // 操作 A：新增
+    // ----------------------------------------------------------------
+    if (action === 'add') {
+      ensureHeaders(sheet);
+      const date     = body.date || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      const category = body.category || '食';
+      const amount   = Number(body.amount) || 0;
+      const note     = body.note || '';
 
-    // -------------------------------------------------------------
-    // 操作 A：刪除操作 (狀態標記為「🔴 已刪除」並加刪除線)
-    // -------------------------------------------------------------
-    if (action === 'delete') {
-      const targetRow = Number(body.rowIndex);
-      const targetDate = body.date;
-      const targetAmount = Number(body.amount);
-      const targetNote = body.note ? String(body.note).trim() : '';
-
-      const lastRow = sheet.getLastRow();
-      if (lastRow <= 1) {
-        return responseJSON({ success: false, message: '試算表目前無資料可刪除' });
+      if (amount <= 0) {
+        return responseJSON({ success: false, message: '金額必須大於 0' });
       }
 
-      const maxCols = Math.min(sheet.getLastColumn(), 6);
-      const data = sheet.getRange(1, 1, lastRow, maxCols).getValues();
+      const newRow = sheet.getLastRow() + 1;
+      sheet.appendRow([ts, date, category, amount, note, '🟢 正常']);
+      sheet.getRange(newRow, 1, 1, 6).setFontLine('none');
+
+      return responseJSON({ success: true, message: '記帳成功！' });
+    }
+
+    // ----------------------------------------------------------------
+    // 操作 B：標記刪除（加刪除線，不真正刪列）
+    // ----------------------------------------------------------------
+    if (action === 'delete') {
+      const targetRow    = Number(body.rowIndex);
+      const targetDate   = body.date;
+      const targetAmount = Number(body.amount);
+      const targetNote   = String(body.note || '').trim();
+
+      const lastDataRow = getLastDataRow(sheet);
+      if (lastDataRow <= 1) {
+        return responseJSON({ success: false, message: '試算表無資料' });
+      }
+
+      const data = sheet.getRange(1, 1, lastDataRow, 6).getValues();
       let matchedRow = -1;
 
-      if (targetRow && targetRow >= 2 && targetRow <= lastRow) {
+      if (targetRow >= 2 && targetRow <= lastDataRow) {
         matchedRow = targetRow;
       } else {
-        const rawHeaders = data[0].map(h => String(h).trim().toLowerCase());
-        const dateIdx = rawHeaders.findIndex(h => (h.includes('日期') || h.includes('date')) && !h.includes('戳記'));
-        const amtIdx = rawHeaders.findIndex(h => h.includes('金額') || h.includes('amount') || h.includes('花費'));
-        const noteIdx = rawHeaders.findIndex(h => h.includes('備註') || h.includes('說明') || h.includes('note'));
+        const h = data[0].map(h => String(h).trim().toLowerCase());
+        const dIdx = h.findIndex(x => (x.includes('日期') || x.includes('date')) && !x.includes('戳記'));
+        const aIdx = h.findIndex(x => x.includes('金額') || x.includes('amount'));
+        const nIdx = h.findIndex(x => x.includes('備註') || x.includes('說明') || x.includes('note'));
 
         for (let i = data.length - 1; i >= 1; i--) {
           const row = data[i];
-          const d = normalizeDate(dateIdx !== -1 ? row[dateIdx] : row[0]);
-          const rawAmt = amtIdx !== -1 ? row[amtIdx] : 0;
-          const a = Number(String(rawAmt).replace(/[$,NT\s]/gi, '').replace(/,/g, '')) || 0;
-          const n = noteIdx !== -1 ? String(row[noteIdx] || '').trim() : '';
-
-          if (d === targetDate && a === targetAmount && (!targetNote || n.includes(targetNote) || targetNote.includes(n))) {
+          const d = normalizeDate(dIdx !== -1 ? row[dIdx] : row[0]);
+          const a = Number(String(aIdx !== -1 ? row[aIdx] : 0).replace(/[$,NT\s]/gi, '')) || 0;
+          const n = String(nIdx !== -1 ? row[nIdx] : '').trim();
+          if (d === targetDate && a === targetAmount && (!targetNote || n === targetNote || n.includes(targetNote))) {
             matchedRow = i + 1;
             break;
           }
@@ -168,89 +163,60 @@ function doPost(e) {
       }
 
       if (matchedRow !== -1) {
-        const statusCol = getStatusColumnIndex(sheet);
-        sheet.getRange(matchedRow, statusCol).setValue(`🔴 已刪除 (${timestamp})`);
+        const statusCol = getStatusCol(sheet);
+        sheet.getRange(matchedRow, statusCol).setValue(`🔴 已刪除 (${ts})`);
         sheet.getRange(matchedRow, 1, 1, Math.min(statusCol, 6)).setFontLine('line-through');
-        
-        ensureDashboard(sheet);
-        return responseJSON({
-          success: true,
-          deleted: true,
-          row: matchedRow,
-          message: `已成功將第 ${matchedRow} 列標記為「已刪除」！`
-        });
+        return responseJSON({ success: true, deleted: true, row: matchedRow });
       }
-
-      return responseJSON({
-        success: false,
-        deleted: false,
-        message: '未在試算表中找到匹配的消費列'
-      });
+      return responseJSON({ success: false, deleted: false, message: '找不到匹配資料' });
     }
 
-    // -------------------------------------------------------------
-    // 操作 B：新增消費紀錄 (標記為「🟢 正常記帳」)
-    // -------------------------------------------------------------
-    if (action === 'add' || !action) {
-      const date = body.date || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
-      const category = body.category || '食';
-      const amount = Number(body.amount) || 0;
-      const note = body.note || '';
-
-      const newRowNumber = sheet.getLastRow() + 1;
-      sheet.appendRow([timestamp, date, category, amount, note, `🟢 正常 (${timestamp})`]);
-      sheet.getRange(newRowNumber, 1, 1, 6).setFontLine('none');
-
-      ensureDashboard(sheet);
-
-      return responseJSON({
-        success: true,
-        message: '記帳成功！已寫入試算表並更新總金額統計。',
-        data: { date: date, category: category, amount: amount, note: note }
-      });
-    }
-
-    // -------------------------------------------------------------
-    // 操作 C：清空試算表所有消費紀錄 (保留標題與統計看板)
-    // -------------------------------------------------------------
+    // ----------------------------------------------------------------
+    // 操作 C：清空所有資料列（只刪 A~F 欄的資料，保留標題）
+    // ----------------------------------------------------------------
     if (action === 'clear_all') {
-      const lastRow = sheet.getLastRow();
+      const lastDataRow = getLastDataRow(sheet);
       let clearedCount = 0;
-      if (lastRow >= 2) {
-        clearedCount = lastRow - 1;
-        sheet.deleteRows(2, lastRow - 1);
+      if (lastDataRow >= 2) {
+        clearedCount = lastDataRow - 1;
+        sheet.deleteRows(2, lastDataRow - 1);
       }
-
-      ensureHeadersAndStatus(sheet);
-      ensureDashboard(sheet);
-
       return responseJSON({
         success: true,
         cleared: true,
         clearedCount: clearedCount,
-        message: `已成功清空 Google 試算表共 ${clearedCount} 筆資料！`
+        message: `已成功清空 ${clearedCount} 筆資料！`
       });
     }
+
+    return responseJSON({ success: false, message: '未知的操作：' + action });
   } catch (error) {
     return responseJSON({ success: false, error: error.toString() });
   }
 }
 
-function ensureHeadersAndStatus(sheet) {
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(['時間戳記', '消費日期', '消費類別', '金額', '備註說明', '狀態 (新增/刪除)']);
-    sheet.getRange(1, 1, 1, 6).setFontWeight('bold').setBackground('#E2E8F0');
-    return;
+// 只計算 A~F 欄有內容的最後一列（排除 H、I 欄看板的干擾）
+function getLastDataRow(sheet) {
+  const lastCol = Math.min(sheet.getLastColumn(), 6);
+  if (lastCol === 0) return 0;
+  const colAValues = sheet.getRange(1, 1, sheet.getMaxRows(), 1).getValues();
+  let lastRow = 0;
+  for (let i = 0; i < colAValues.length; i++) {
+    if (colAValues[i][0] !== '' && colAValues[i][0] !== null) {
+      lastRow = i + 1;
+    }
   }
+  return lastRow;
+}
 
-  const firstRow = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 6)).getValues()[0];
-  const hasStatus = firstRow.some(h => String(h).includes('狀態'));
-  if (!hasStatus) {
-    sheet.getRange(1, 6).setValue('狀態 (新增/刪除)').setFontWeight('bold').setBackground('#E2E8F0');
+function ensureHeaders(sheet) {
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(['時間戳記', '消費日期', '消費類別', '金額', '備註說明', '狀態']);
+    sheet.getRange(1, 1, 1, 6).setFontWeight('bold').setBackground('#E2E8F0');
   }
 }
 
-function getStatusColumnIndex(sheet) {
+function getStatusCol(sheet) {
   const headers = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 6)).getValues()[0];
   for (let c = 0; c < headers.length; c++) {
     if (String(headers[c]).includes('狀態')) return c + 1;
@@ -258,105 +224,40 @@ function getStatusColumnIndex(sheet) {
   return 6;
 }
 
-function ensureDashboard(sheet) {
-  try {
-    const startCol = 8;
-    const titleVal = sheet.getRange(1, startCol).getValue();
-    if (titleVal === '📊 消費即時統計看板') {
-      return;
-    }
-
-    sheet.getRange(1, startCol, 1, 2)
-      .merge()
-      .setValue('📊 消費即時統計看板')
-      .setFontWeight('bold')
-      .setFontSize(11)
-      .setBackground('#10B981')
-      .setFontColor('#FFFFFF')
-      .setHorizontalAlignment('center');
-
-    const dashboardItems = [
-      ['💰 累積總支出', '=SUMIF(F2:F, "<>*已刪除*", D2:D)'],
-      ['📝 有效總筆數', '=COUNTIF(F2:F, "<>*已刪除*")'],
-      ['🍜 食 (飲食三餐)', '=SUMIFS(D2:D, C2:C, "*食*", F2:F, "<>*已刪除*")'],
-      ['👕 衣 (服飾鞋包)', '=SUMIFS(D2:D, C2:C, "*衣*", F2:F, "<>*已刪除*")'],
-      ['🏠 住 (房租水電)', '=SUMIFS(D2:D, C2:C, "*住*", F2:F, "<>*已刪除*")'],
-      ['🚗 行 (交通通勤)', '=SUMIFS(D2:D, C2:C, "*行*", F2:F, "<>*已刪除*")'],
-      ['📚 育 (教育進修)', '=SUMIFS(D2:D, C2:C, "*育*", F2:F, "<>*已刪除*")'],
-      ['🎮 樂 (休閒玩樂)', '=SUMIFS(D2:D, C2:C, "*樂*", F2:F, "<>*已刪除*")']
-    ];
-
-    for (let r = 0; r < dashboardItems.length; r++) {
-      const rowIdx = r + 2;
-      sheet.getRange(rowIdx, startCol).setValue(dashboardItems[r][0]).setFontWeight('bold').setBackground('#F8FAFC');
-      sheet.getRange(rowIdx, startCol + 1).setFormula(dashboardItems[r][1]).setFontWeight('bold').setFontColor('#0F172A').setHorizontalAlignment('right');
-    }
-
-    sheet.getRange(2, startCol + 1).setNumberFormat('"NT$"#,##0').setFontColor('#059669').setFontSize(12);
-    sheet.getRange(4, startCol + 1, 6, 1).setNumberFormat('"NT$"#,##0');
-    sheet.getRange(1, startCol, dashboardItems.length + 1, 2).setBorder(true, true, true, true, true, true, '#CBD5E1', SpreadsheetApp.BorderStyle.SOLID);
-  } catch (err) {
-  }
-}
-
 function getTargetSheet(ss) {
   const sheets = ss.getSheets();
   if (sheets.length === 1) return sheets[0];
-
-  for (let i = 0; i < sheets.length; i++) {
-    const name = sheets[i].getName();
-    if (name.includes('表單回應') || name.toLowerCase().includes('form responses')) {
-      return sheets[i];
-    }
+  for (const s of sheets) {
+    if (s.getName().includes('表單回應') || s.getName().toLowerCase().includes('form responses')) return s;
   }
-
-  let maxRows = -1;
-  let target = sheets[0];
-  for (let i = 0; i < sheets.length; i++) {
-    const s = sheets[i];
-    const rows = s.getLastRow();
-    if (rows > maxRows) {
-      maxRows = rows;
-      target = s;
-    }
-  }
-  return target;
+  return sheets.reduce((a, b) => (a.getLastRow() >= b.getLastRow() ? a : b));
 }
 
-// 嚴格日期標準化，絕不產生 Sun 或錯誤字串
 function normalizeDate(raw) {
-  if (!raw) return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
-  
+  if (!raw) return '';
   if (raw instanceof Date) {
     return Utilities.formatDate(raw, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   }
-
   const str = String(raw).trim();
-  const match = str.match(/(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/);
-  if (match) {
-    const y = match[1];
-    const m = match[2].padStart(2, '0');
-    const d = match[3].padStart(2, '0');
-    return `${y}-${m}-${d}`;
+  const m = str.match(/(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/);
+  if (m) {
+    const y = parseInt(m[1]), mo = parseInt(m[2]), d = parseInt(m[3]);
+    if (y >= 2000 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      return `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    }
   }
-
-  const parsed = new Date(str);
-  if (!isNaN(parsed.getTime()) && parsed.getFullYear() > 2000) {
-    return Utilities.formatDate(parsed, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-  }
-
-  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return '';
 }
 
 function normalizeCategory(raw) {
   if (!raw) return '食';
-  const str = String(raw).trim();
-  if (str.includes('食') || str.includes('餐') || str.includes('飲')) return '食';
-  if (str.includes('衣') || str.includes('服') || str.includes('穿')) return '衣';
-  if (str.includes('住') || str.includes('房') || str.includes('水電') || str.includes('瓦斯')) return '住';
-  if (str.includes('行') || str.includes('車') || str.includes('交通') || str.includes('油')) return '行';
-  if (str.includes('育') || str.includes('書') || str.includes('學') || str.includes('課')) return '育';
-  if (str.includes('樂') || str.includes('玩') || str.includes('遊') || str.includes('休閒')) return '樂';
+  const s = String(raw).trim();
+  if (s.includes('食') || s.includes('餐') || s.includes('飲')) return '食';
+  if (s.includes('衣') || s.includes('服') || s.includes('穿')) return '衣';
+  if (s.includes('住') || s.includes('房') || s.includes('水電') || s.includes('瓦斯')) return '住';
+  if (s.includes('行') || s.includes('車') || s.includes('交通') || s.includes('油')) return '行';
+  if (s.includes('育') || s.includes('書') || s.includes('學') || s.includes('課')) return '育';
+  if (s.includes('樂') || s.includes('玩') || s.includes('遊') || s.includes('休閒')) return '樂';
   return '食';
 }
 
