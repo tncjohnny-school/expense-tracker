@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日常記帳本 - 智慧消費統計與 Google 雲端同步</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Google Fonts & Font Awesome Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <!-- Chart.js for Pie Chart -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- 頂部導覽列 -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="brand-icon">
+          <i class="fa-solid fa-wallet"></i>
+        </div>
+        <div>
+          <h1>日常記帳本</h1>
+          <p class="subtitle">食・衣・住・行・育・樂 智慧月度統計</p>
+        </div>
+      </div>
+      <div class="nav-actions">
+        <div id="sync-status-badge" class="badge badge-local" title="目前的同步狀態">
+          <span class="status-dot"></span>
+          <span class="status-text">本機儲存模式</span>
+        </div>
+        <button id="btn-sync-cloud" class="icon-btn" title="手動同步 Google 雲端資料">
+          <i class="fa-solid fa-arrows-rotate"></i>
+        </button>
+        <button id="btn-open-settings" class="icon-btn" title="設定 Google 雲端表單串接">
+          <i class="fa-solid fa-gear"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- 月份選擇與切換列 -->
+    <section class="month-selector-bar">
+      <div class="month-nav">
+        <button id="btn-prev-month" class="month-btn" title="上個月">
+          <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <div class="current-month-display">
+          <input type="month" id="month-picker" class="hidden-month-input">
+          <button id="month-picker-trigger" class="month-text-btn">
+            <i class="fa-regular fa-calendar-days"></i>
+            <span id="current-month-text">2026 年 11 月</span>
+            <i class="fa-solid fa-caret-down"></i>
+          </button>
+        </div>
+        <button id="btn-next-month" class="month-btn" title="下個月">
+          <i class="fa-solid fa-chevron-right"></i>
+        </button>
+      </div>
+      <button id="btn-this-month" class="pill-btn">回到本月</button>
+    </section>
+
+    <!-- 主要內容區：兩欄版面 -->
+    <main class="dashboard-grid">
+      <!-- 左欄：記帳輸入面板 -->
+      <section class="card form-card">
+        <div class="card-header">
+          <h2><i class="fa-solid fa-circle-plus"></i> 新增消費</h2>
+          <span class="quick-hint">支援 Enter 快速送出</span>
+        </div>
+
+        <form id="expense-form" autocomplete="off">
+          <!-- 項目分類選擇 (食、衣、住、行、育、樂) -->
+          <div class="form-group">
+            <label class="form-label">消費類別</label>
+            <div class="category-grid" id="category-selector">
+              <button type="button" class="category-btn active" data-cat="食">
+                <span class="cat-icon cat-food"><i class="fa-solid fa-utensils"></i></span>
+                <span class="cat-name">食</span>
+                <span class="cat-desc">飲食三餐</span>
+              </button>
+              <button type="button" class="category-btn" data-cat="衣">
+                <span class="cat-icon cat-clothing"><i class="fa-solid fa-shirt"></i></span>
+                <span class="cat-name">衣</span>
+                <span class="cat-desc">服飾鞋包</span>
+              </button>
+              <button type="button" class="category-btn" data-cat="住">
+                <span class="cat-icon cat-housing"><i class="fa-solid fa-house"></i></span>
+                <span class="cat-name">住</span>
+                <span class="cat-desc">房租水電</span>
+              </button>
+              <button type="button" class="category-btn" data-cat="行">
+                <span class="cat-icon cat-transport"><i class="fa-solid fa-car"></i></span>
+                <span class="cat-name">行</span>
+                <span class="cat-desc">交通通勤</span>
+              </button>
+              <button type="button" class="category-btn" data-cat="育">
+                <span class="cat-icon cat-education"><i class="fa-solid fa-book-open"></i></span>
+                <span class="cat-name">育</span>
+                <span class="cat-desc">教育進修</span>
+              </button>
+              <button type="button" class="category-btn" data-cat="樂">
+                <span class="cat-icon cat-entertainment"><i class="fa-solid fa-gamepad"></i></span>
+                <span class="cat-name">樂</span>
+                <span class="cat-desc">休閒玩樂</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 金額輸入 -->
+          <div class="form-group">
+            <label for="expense-amount" class="form-label">金額 (NT$)</label>
+            <div class="input-with-prefix">
+              <span class="currency-symbol">$</span>
+              <input type="number" id="expense-amount" placeholder="0" min="1" step="1" required autofocus>
+            </div>
+            <div class="quick-amounts">
+              <button type="button" class="quick-amt-btn" data-add="50">+50</button>
+              <button type="button" class="quick-amt-btn" data-add="100">+100</button>
+              <button type="button" class="quick-amt-btn" data-add="200">+200</button>
+              <button type="button" class="quick-amt-btn" data-add="500">+500</button>
+              <button type="button" class="quick-amt-btn" data-add="1000">+1,000</button>
+            </div>
+          </div>
+
+          <!-- 消費品項 / 備註 -->
+          <div class="form-group">
+            <label for="expense-note" class="form-label">消費品項 / 備註</label>
+            <div class="input-with-icon">
+              <i class="fa-solid fa-pen"></i>
+              <input type="text" id="expense-note" placeholder="例：午餐便當、高鐵車票、書籍..." maxlength="50">
+            </div>
+          </div>
+
+          <!-- 消費日期 -->
+          <div class="form-group">
+            <label for="expense-date" class="form-label">消費日期</label>
+            <div class="input-with-icon">
+              <i class="fa-regular fa-calendar"></i>
+              <input type="date" id="expense-date" required>
+            </div>
+          </div>
+
+          <!-- 送出按鈕 -->
+          <button type="submit" id="btn-submit" class="primary-btn">
+            <i class="fa-solid fa-check"></i>
+            <span>記錄這筆消費</span>
+          </button>
+        </form>
+      </section>
+
+      <!-- 右欄：統計數據卡 + 圓餅圖 -->
+      <section class="stats-column">
+        <!-- 統計指標卡片 -->
+        <div class="metric-cards-grid">
+          <div class="metric-card main-metric">
+            <div class="metric-info">
+              <span class="metric-label" id="month-metric-title">本月總支出</span>
+              <div class="metric-value-wrap">
+                <span class="currency">NT$</span>
+                <span class="metric-value" id="total-monthly-expense">0</span>
+              </div>
+            </div>
+            <div class="metric-icon-box">
+              <i class="fa-solid fa-receipt"></i>
+            </div>
+          </div>
+
+          <div class="metric-card sub-metric">
+            <div class="metric-info">
+              <span class="metric-label">記帳筆數</span>
+              <div class="metric-value-wrap">
+                <span class="metric-value" id="monthly-count">0</span>
+                <span class="unit">筆</span>
+              </div>
+            </div>
+            <div class="metric-icon-box">
+              <i class="fa-solid fa-list-check"></i>
+            </div>
+          </div>
+
+          <div class="metric-card sub-metric">
+            <div class="metric-info">
+              <span class="metric-label">最高開銷類別</span>
+              <div class="metric-value-wrap">
+                <span class="metric-value-category" id="top-category">-</span>
+              </div>
+            </div>
+            <div class="metric-icon-box">
+              <i class="fa-solid fa-crown"></i>
+            </div>
+          </div>
+        </div>
+
+        <!-- 圓餅圖視覺化卡片 -->
+        <div class="card chart-card">
+          <div class="card-header chart-header">
+            <div>
+              <h2><i class="fa-solid fa-chart-pie"></i> 當月消費佔比</h2>
+              <p class="chart-subtitle">食、衣、住、行、育、樂 圓餅圖分析</p>
+            </div>
+            <div class="chart-view-toggle">
+              <button id="btn-chart-doughnut" class="toggle-btn active" title="環形圖">
+                <i class="fa-solid fa-chart-pie"></i> 環形
+              </button>
+              <button id="btn-chart-pie" class="toggle-btn" title="實心圓餅圖">
+                <i class="fa-solid fa-circle"></i> 圓餅
+              </button>
+            </div>
+          </div>
+
+          <div class="chart-content-layout">
+            <div class="chart-wrapper">
+              <canvas id="expensePieChart"></canvas>
+              <div id="empty-chart-notice" class="empty-chart-overlay hidden">
+                <i class="fa-solid fa-folder-open"></i>
+                <p>當月尚無消費記錄</p>
+                <small>在左側輸入消費開始記帳吧！</small>
+              </div>
+            </div>
+
+            <!-- 分類金額列表與佔比條 -->
+            <div class="category-breakdown-list" id="category-breakdown">
+              <!-- JS 動態渲染 6 大類別項目 -->
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 下半部：當月消費清單 -->
+    <section class="card history-card">
+      <div class="card-header history-header">
+        <div class="history-title-group">
+          <h2><i class="fa-solid fa-clock-rotate-left"></i> <span id="history-month-title">2026 年 11 月</span> 消費明細</h2>
+          <span class="count-badge" id="history-count-badge">0 筆</span>
+        </div>
+        <div class="history-controls">
+          <div class="search-box">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <input type="text" id="history-search" placeholder="搜尋品項或金額...">
+          </div>
+          <select id="filter-category" class="filter-select">
+            <option value="ALL">全部類別</option>
+            <option value="食">食 (飲食三餐)</option>
+            <option value="衣">衣 (服飾鞋包)</option>
+            <option value="住">住 (房租水電)</option>
+            <option value="行">行 (交通通勤)</option>
+            <option value="育">育 (教育進修)</option>
+            <option value="樂">樂 (休閒玩樂)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="history-list-container">
+        <div id="expense-list" class="expense-items-list">
+          <!-- JS 動態渲染各筆消費明細 -->
+        </div>
+        <div id="empty-history-notice" class="empty-state hidden">
+          <div class="empty-illustration">
+            <i class="fa-solid fa-receipt"></i>
+          </div>
+          <h3>這個月還沒有消費記錄</h3>
+          <p>快來記錄第一筆開銷，掌握您的每月預算！</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 頁尾 -->
+    <footer class="app-footer">
+      <p>日常消費記帳本 &copy; 2026 ｜ 支援 Google 雲端表單 / 試算表雙向同步</p>
+    </footer>
+  </div>
+
+  <!-- Google 雲端串接設定彈窗 (Settings Modal) -->
+  <div class="modal-backdrop hidden" id="settings-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <i class="fa-brands fa-google modal-icon"></i>
+          <h3>Google 雲端表單 / 試算表串接設定</h3>
+        </div>
+        <button class="modal-close-btn" id="btn-close-settings">&times;</button>
+      </div>
+
+      <div class="modal-tabs">
+        <button class="tab-btn active" data-tab="tab-gas">
+          <i class="fa-solid fa-bolt"></i> 方案 A：Google Apps Script (雙向讀寫，推薦)
+        </button>
+        <button class="tab-btn" data-tab="tab-form">
+          <i class="fa-solid fa-file-pen"></i> 方案 B：Google 表單 (單向快速提交)
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <!-- 方案 A：Google Apps Script -->
+        <div class="tab-content active" id="tab-gas">
+          <div class="instruction-box">
+            <h4>💡 雙向同步優點：</h4>
+            <p>只要貼上 Google Apps Script 網址，網頁就能<strong>「即時從試算表讀取所有歷史資料」</strong>並即時繪製圓餅圖，同時每記一筆都能<strong>「即時寫入試算表」</strong>！跨手機、跨電腦皆能同步。</p>
+          </div>
+
+          <div class="form-group">
+            <label for="gas-webapp-url" class="form-label">
+              Google Apps Script 網頁應用程式網址 (Web App URL)
+            </label>
+            <input type="url" id="gas-webapp-url" placeholder="https://script.google.com/macros/s/AKfycb.../exec">
+            <small class="field-hint">部署類型請設為「網頁應用程式」，誰可以存取設為「任何人 (Anyone)」</small>
+          </div>
+
+          <div class="modal-actions-bar">
+            <button id="btn-test-gas" class="secondary-btn">
+              <i class="fa-solid fa-plug-circle-check"></i> 測試並立即讀取雲端資料
+            </button>
+            <button id="btn-view-script-code" class="text-btn">
+              <i class="fa-solid fa-code"></i> 查看/複製 Apps Script 後端程式碼
+            </button>
+          </div>
+
+          <div id="script-code-container" class="code-fold hidden">
+            <div class="code-fold-header">
+              <span>貼到 Google 試算表「擴充功能 > Apps Script」的程式碼：</span>
+              <button id="btn-copy-code" class="pill-btn mini-btn"><i class="fa-regular fa-copy"></i> 複製代碼</button>
+            </div>
+            <pre><code id="gas-code-display">載入中...</code></pre>
+          </div>
+        </div>
+
+        <!-- 方案 B：Google 表單直接提交 -->
+        <div class="tab-content" id="tab-form">
+          <div class="instruction-box">
+            <h4>💡 Google 表單 (Google Forms) 串接說明：</h4>
+            <p>建立一個包含「日期、類別、金額、備註」4 個題目的 Google 表單，透過預先填寫連結取得 <code>entry.XXXXXX</code> ID，網頁送出時便會直接發送到你的 Google 表單。</p>
+          </div>
+
+          <div class="form-group">
+            <label for="form-action-url" class="form-label">Google 表單回應網址 (Form Response URL)</label>
+            <input type="url" id="form-action-url" placeholder="https://docs.google.com/forms/d/e/1FAIpQL.../formResponse">
+          </div>
+
+          <div class="form-row-grid">
+            <div class="form-group">
+              <label for="entry-date" class="form-label">日期 Entry ID</label>
+              <input type="text" id="entry-date" placeholder="entry.123456789">
+            </div>
+            <div class="form-group">
+              <label for="entry-category" class="form-label">類別 Entry ID</label>
+              <input type="text" id="entry-category" placeholder="entry.987654321">
+            </div>
+            <div class="form-group">
+              <label for="entry-amount" class="form-label">金額 Entry ID</label>
+              <input type="text" id="entry-amount" placeholder="entry.456789123">
+            </div>
+            <div class="form-group">
+              <label for="entry-note" class="form-label">備註 Entry ID</label>
+              <input type="text" id="entry-note" placeholder="entry.321654987">
+            </div>
+          </div>
+        </div>
+
+        <!-- 資料管理與示範資料 -->
+        <hr class="modal-divider">
+        <div class="data-management-section">
+          <h4><i class="fa-solid fa-database"></i> 本機資料管理</h4>
+          <p class="subtext">初次使用想先看看效果？可以一鍵載入示範資料體驗圓餅圖與月度切換：</p>
+          <div class="demo-buttons-row">
+            <button id="btn-load-demo" class="secondary-btn">
+              <i class="fa-solid fa-wand-magic-sparkles"></i> 載入示範資料 (食衣住行育樂)
+            </button>
+            <button id="btn-export-json" class="secondary-btn">
+              <i class="fa-solid fa-download"></i> 匯出備份 (JSON)
+            </button>
+            <button id="btn-clear-all" class="danger-btn">
+              <i class="fa-solid fa-trash-can"></i> 清空本機資料
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button id="btn-cancel-settings" class="secondary-btn">關閉</button>
+        <button id="btn-save-settings" class="primary-btn">
+          <i class="fa-solid fa-floppy-disk"></i> 儲存設定
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 提示訊息 Toast -->
+  <div id="toast" class="toast hidden">
+    <i class="toast-icon fa-solid fa-circle-check"></i>
+    <span class="toast-message">操作成功</span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
