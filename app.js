@@ -49,6 +49,10 @@ let cloudConfig = {
 // 初始化與 DOM 監聽
 // ====================================================================
 document.addEventListener('DOMContentLoaded', () => {
+  // 清除舊版 V1 的壞資料 key（防止舊 key 殘留）
+  localStorage.removeItem('EXPENSE_TRACKER_DATA_V1');
+  localStorage.removeItem('EXPENSE_TRACKER_INITIALIZED_V1');
+
   loadConfig();
   loadDeletedKeys();
   loadData();
@@ -323,10 +327,17 @@ async function fetchCloudData(isSilent = false) {
         return;
       }
 
-      // 合併雲端資料（自動排除本地已刪除的紀錄，並標準化日期與分類）
+      // 合併雲端資料（自動排除本地已刪除的紀錄、無效日期、金額為 0 的空白列）
       const validRows = result.data.filter(item => {
-        const cleanCat = normalizeCategoryClient(item.category);
+        // 排除金額 <= 0 的無效列（統計看板被誤抓時產生的 0 元空資料）
+        if ((Number(item.amount) || 0) <= 0) return false;
+
+        // 排除日期異常（包含 NaN、Sun 等非 YYYY-MM-DD 格式）
         const cleanDate = normalizeDateClient(item.date);
+        if (!cleanDate || cleanDate.includes('NaN') || !/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) return false;
+
+        // 排除本地已刪除的黑名單
+        const cleanCat = normalizeCategoryClient(item.category);
         const itemKey = `${cleanDate}_${cleanCat}_${Number(item.amount) || 0}_${(item.note || '').trim()}`;
         return !deletedKeys.has(itemKey) && !deletedKeys.has(item.id);
       });
@@ -390,18 +401,34 @@ function normalizeCategoryClient(raw) {
   return '食';
 }
 
-// 前端輔助：確保日期字串為 YYYY-MM-DD
+// 前端輔助：確保日期字串為嚴格的 YYYY-MM-DD，絕不產生 Sun 或 NaN
 function normalizeDateClient(raw) {
   if (!raw) return getTodayString();
   const str = String(raw).trim();
+
+  // 優先比對 YYYY-MM-DD 或 YYYY/MM/DD 或 YYYY.MM.DD 格式
   const match = str.match(/(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/);
   if (match) {
-    const y = match[1];
-    const m = match[2].padStart(2, '0');
-    const d = match[3].padStart(2, '0');
+    const y = parseInt(match[1], 10);
+    const m = parseInt(match[2], 10);
+    const d = parseInt(match[3], 10);
+    // 年份合理性驗證
+    if (y >= 2000 && y <= 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+  }
+
+  // 嘗試 JS Date 解析，只接受合理年份
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime()) && parsed.getFullYear() >= 2000) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }
-  return str.split(' ')[0].replace(/\//g, '-');
+
+  // 無法解析時回傳今天，避免顯示 Sun/NaN
+  return getTodayString();
 }
 
 // ====================================================================
@@ -990,7 +1017,23 @@ function loadData() {
   try {
     const raw = localStorage.getItem(STORAGE_DATA_KEY);
     if (raw) {
-      expenses = JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      // 讀取時過濾掉無效紀錄（金額 ≤ 0 或日期無效）
+      expenses = parsed.filter(item => {
+        const amount = Number(item.amount) || 0;
+        if (amount <= 0) return false;
+        const date = normalizeDateClient(item.date);
+        if (!date || date.includes('NaN') || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+        return true;
+      }).map(item => ({
+        ...item,
+        date: normalizeDateClient(item.date)
+      }));
+      // 若過濾後資料有變動，自動寫回 localStorage 清掉壞資料
+      if (expenses.length !== parsed.length) {
+        console.info(`已清除 ${parsed.length - expenses.length} 筆無效本機資料`);
+        saveData();
+      }
     }
   } catch (e) {
     console.error('讀取 LocalStorage 失敗:', e);
