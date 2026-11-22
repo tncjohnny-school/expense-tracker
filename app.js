@@ -297,34 +297,61 @@ async function fetchCloudData(isSilent = false) {
     return;
   }
 
+  const syncBtn = document.getElementById('btn-sync-cloud');
+  if (syncBtn) syncBtn.classList.add('rotating');
+
   if (!isSilent) {
     showToast('正在從 Google 試算表同步資料中...', 'info');
   }
 
   try {
-    const res = await fetch(cloudConfig.gasUrl);
+    // 加入時間戳記破壞快取，避免手機或瀏覽器讀取到舊的快取內容
+    const separator = cloudConfig.gasUrl.includes('?') ? '&' : '?';
+    const noCacheUrl = `${cloudConfig.gasUrl}${separator}_t=${Date.now()}`;
+
+    const res = await fetch(noCacheUrl);
     const result = await res.json();
 
     if (result && result.success && Array.isArray(result.data)) {
       if (result.data.length === 0) {
-        if (!isSilent) showToast('Google 試算表連線成功，目前試算表無資料。', 'info');
+        if (!isSilent) {
+          showToast(`已連線到分頁「${result.sheetName || '試算表'}」，目前尚無資料`, 'info');
+        }
         return;
       }
 
-      // 合併雲端資料（以雲端為準）
-      expenses = result.data.map(item => ({
-        id: item.id || ('gs_' + Math.random().toString(36).substr(2, 9)),
-        date: item.date,
-        category: CATEGORIES[item.category] ? item.category : '食',
-        amount: Number(item.amount) || 0,
-        note: item.note || ''
-      }));
+      // 合併雲端資料並標準化日期與分類
+      expenses = result.data.map(item => {
+        const cleanCat = normalizeCategoryClient(item.category);
+        const cleanDate = normalizeDateClient(item.date);
+        return {
+          id: item.id || ('gs_' + Math.random().toString(36).substr(2, 9)),
+          date: cleanDate,
+          category: cleanCat,
+          amount: Number(item.amount) || 0,
+          note: item.note || `${cleanCat}類消費`
+        };
+      });
 
       localStorage.setItem(STORAGE_INIT_KEY, 'true');
       saveData();
+
+      // 檢查是否需要自動切換到有資料的月份
+      const currentMonthHasData = expenses.some(i => i.date.startsWith(currentYearMonth));
+      if (!currentMonthHasData && expenses.length > 0) {
+        // 取得最新一筆資料的年月
+        const latestDate = expenses.map(i => i.date).sort().reverse()[0];
+        if (latestDate) {
+          currentYearMonth = latestDate.slice(0, 7);
+          const monthPicker = document.getElementById('month-picker');
+          if (monthPicker) monthPicker.value = currentYearMonth;
+        }
+      }
+
       renderAll();
       if (!isSilent) {
-        showToast(`🎉 成功同步 ${result.data.length} 筆 Google 試算表資料！`, 'success');
+        const sheetInfo = result.sheetName ? ` [${result.sheetName}]` : '';
+        showToast(`🎉 成功同步 ${result.data.length} 筆資料${sheetInfo}！`, 'success');
       }
     } else {
       if (!isSilent) showToast('讀取失敗：' + (result.error || '回傳格式異常'), 'error');
@@ -334,7 +361,36 @@ async function fetchCloudData(isSilent = false) {
     if (!isSilent) {
       showToast('連線失敗，請確認 Web App 是否已設定為「任何人」可存取。', 'error');
     }
+  } finally {
+    if (syncBtn) syncBtn.classList.remove('rotating');
   }
+}
+
+// 前端輔助：標準化分類名稱
+function normalizeCategoryClient(raw) {
+  if (!raw) return '食';
+  const str = String(raw).trim();
+  if (str.includes('食') || str.includes('餐') || str.includes('飲')) return '食';
+  if (str.includes('衣') || str.includes('服') || str.includes('穿')) return '衣';
+  if (str.includes('住') || str.includes('房') || str.includes('水電') || str.includes('瓦斯')) return '住';
+  if (str.includes('行') || str.includes('車') || str.includes('交通') || str.includes('油')) return '行';
+  if (str.includes('育') || str.includes('書') || str.includes('學') || str.includes('課')) return '育';
+  if (str.includes('樂') || str.includes('玩') || str.includes('遊') || str.includes('休閒')) return '樂';
+  return '食';
+}
+
+// 前端輔助：確保日期字串為 YYYY-MM-DD
+function normalizeDateClient(raw) {
+  if (!raw) return getTodayString();
+  const str = String(raw).trim();
+  const match = str.match(/(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/);
+  if (match) {
+    const y = match[1];
+    const m = match[2].padStart(2, '0');
+    const d = match[3].padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return str.split(' ')[0].replace(/\//g, '-');
 }
 
 // ====================================================================

@@ -168,6 +168,15 @@ body {
   border-color: var(--primary);
 }
 
+.icon-btn.rotating i {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* 月份切換控制列 */
 .month-selector-bar {
   display: flex;

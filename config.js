@@ -15,7 +15,7 @@
 window.DEFAULT_CONFIG = {
   // 請將您的 Google Apps Script Web App URL 填入下方引號中：
   // 例如: "https://script.google.com/macros/s/AKfycbxxxxxxxxx/exec"
-  gasUrl: "https://script.google.com/macros/s/AKfycbzw_zT5YiuZF1Zume5bVPKWNSQw8cdKXdCqFVtkv3EWW865FbHnk3qkeyuCuEzzmh4l/exec",
+  gasUrl: "https://script.google.com/macros/s/AKfycbyW1ESw9PJe8EwN4BpiBGisfylb_n_GRbYZfoK_XQmPx-559MjUrKtSu0DwQObBldNO/exec",
 
   // 若使用 Google 表單單向提交模式，可在下方填寫：
   formUrl: "",
