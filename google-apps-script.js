@@ -1,16 +1,16 @@
 /**
  * ====================================================================
- * Google 試算表後端程式碼 (Google Apps Script) - 旗艦智慧統計版
+ * Google 試算表後端程式碼 (Google Apps Script) - 旗艦智慧統計修復版
  * ====================================================================
  * 
- * 💡 本版本新增兩大核心功能：
- * 1. 【記錄新增與刪除狀態】：
- *    - 試算表會有一欄「狀態」，清楚標示「🟢 正常」或「🔴 已刪除 (含刪除時間)」，保留完整流水帳歷程。
- * 2. 【自動計算總金額與統計看板】：
- *    - 自動在試算表右側建立「📊 即時消費統計看板」，包含累積總金額、有效筆數、食衣住行育樂各類小計！
+ * 💡 修正項目：
+ * 1. 嚴格限定只讀取 A~F 欄（前 6 欄），徹底解決「右側統計看板被誤判為 0 元食類消費」的問題！
+ * 2. 嚴格過濾無效列與金額 <= 0 的空白列，避免產生幽靈紀錄。
+ * 3. 日期強化解析，避免解析出 Sun 或無效年月。
+ * 4. 支援完整的增、查、刪、一鍵清空功能。
  * 
  * 【更新步驟】
- * 1. 打開 Google 試算表 -> 「擴充功能」 -> 「Apps Script」，將此程式碼覆蓋儲存。
+ * 1. 打開 Google 試算表 -> 「擴充功能」 -> 「Apps Script」，將此程式碼整份覆蓋儲存。
  * 2. 點選右上角「部署」 -> 「管理部署作業」。
  * 3. 點選右上角鉛筆圖示（編輯） -> 版本選擇「新版本 (New Version)」 -> 點選「部署」完成！
  */
@@ -23,8 +23,8 @@ function doGet(e) {
     // 確保右側統計看板存在
     ensureDashboard(sheet);
     
-    const data = sheet.getDataRange().getValues();
-    if (data.length <= 1) {
+    const lastRow = sheet.getLastRow();
+    if (lastRow <= 1) {
       return responseJSON({ 
         success: true, 
         sheetName: sheet.getName(),
@@ -33,6 +33,11 @@ function doGet(e) {
         data: [] 
       });
     }
+    
+    // 關鍵修正：只抓取第 1 到 6 欄 (A~F 欄：時間戳記, 消費日期, 類別, 金額, 備註, 狀態)
+    // 絕不抓取第 8 欄 (H 欄) 以後的統計看板，避免看板被誤判成消費資料！
+    const maxCols = Math.min(sheet.getLastColumn(), 6);
+    const data = sheet.getRange(1, 1, lastRow, maxCols).getValues();
     
     // 第一列是標題列
     const rawHeaders = data[0].map(h => String(h).trim());
@@ -53,25 +58,30 @@ function doGet(e) {
 
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
-      if (row.every(cell => cell === '')) continue;
+      // 只要該列前幾欄皆為空，直接略過
+      if (row.slice(0, 5).every(cell => cell === '' || cell === null)) continue;
       
-      // 檢查狀態：若已標記為刪除，則略過（不傳入網頁統計）
+      // 檢查狀態：若已標記為刪除，則略過
       const statusText = statusIdx !== -1 ? String(row[statusIdx] || '') : '';
       if (statusText.includes('刪除') || statusText.includes('delete')) {
         continue;
       }
       
-      let rawDate = dateIdx !== -1 ? row[dateIdx] : row[0];
-      let formattedDate = normalizeDate(rawDate);
-      
-      let rawCategory = catIdx !== -1 ? String(row[catIdx] || '').trim() : '';
-      let category = normalizeCategory(rawCategory);
-      
       let rawAmt = amtIdx !== -1 ? row[amtIdx] : 0;
       let cleanAmt = String(rawAmt).replace(/[$,NT\s]/gi, '').replace(/,/g, '');
       let amount = Number(cleanAmt) || 0;
 
+      // 關鍵防禦：若金額 <= 0 且沒有有效備註，視為無效空列，絕不加入！
       let note = noteIdx !== -1 ? String(row[noteIdx] || '').trim() : '';
+      let rawDate = dateIdx !== -1 ? row[dateIdx] : row[0];
+      if (amount <= 0 && !note && !rawDate) {
+        continue;
+      }
+      
+      let formattedDate = normalizeDate(rawDate);
+      let rawCategory = catIdx !== -1 ? String(row[catIdx] || '').trim() : '';
+      let category = normalizeCategory(rawCategory);
+
       if (!note) {
         note = category ? `${category}類消費` : '日常消費';
       }
@@ -115,11 +125,10 @@ function doPost(e) {
     const action = body.action || 'add';
     const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
 
-    // 檢查欄位標題與狀態欄位
     ensureHeadersAndStatus(sheet);
 
     // -------------------------------------------------------------
-    // 操作 A：刪除操作 (將狀態標記為「🔴 已刪除」並加刪除線，保留操作紀錄)
+    // 操作 A：刪除操作 (狀態標記為「🔴 已刪除」並加刪除線)
     // -------------------------------------------------------------
     if (action === 'delete') {
       const targetRow = Number(body.rowIndex);
@@ -127,14 +136,18 @@ function doPost(e) {
       const targetAmount = Number(body.amount);
       const targetNote = body.note ? String(body.note).trim() : '';
 
-      const data = sheet.getDataRange().getValues();
+      const lastRow = sheet.getLastRow();
+      if (lastRow <= 1) {
+        return responseJSON({ success: false, message: '試算表目前無資料可刪除' });
+      }
+
+      const maxCols = Math.min(sheet.getLastColumn(), 6);
+      const data = sheet.getRange(1, 1, lastRow, maxCols).getValues();
       let matchedRow = -1;
 
-      // 1. 若有 rowIndex 優先比對
-      if (targetRow && targetRow >= 2 && targetRow <= sheet.getLastRow()) {
+      if (targetRow && targetRow >= 2 && targetRow <= lastRow) {
         matchedRow = targetRow;
       } else {
-        // 2. 倒序比對日期、金額
         const rawHeaders = data[0].map(h => String(h).trim().toLowerCase());
         const dateIdx = rawHeaders.findIndex(h => (h.includes('日期') || h.includes('date')) && !h.includes('戳記'));
         const amtIdx = rawHeaders.findIndex(h => h.includes('金額') || h.includes('amount') || h.includes('花費'));
@@ -156,9 +169,7 @@ function doPost(e) {
 
       if (matchedRow !== -1) {
         const statusCol = getStatusColumnIndex(sheet);
-        // 將狀態改為已刪除
         sheet.getRange(matchedRow, statusCol).setValue(`🔴 已刪除 (${timestamp})`);
-        // 為該列文字劃上刪除線
         sheet.getRange(matchedRow, 1, 1, Math.min(statusCol, 6)).setFontLine('line-through');
         
         ensureDashboard(sheet);
@@ -186,14 +197,10 @@ function doPost(e) {
       const amount = Number(body.amount) || 0;
       const note = body.note || '';
 
-      // 新增一列：[時間戳記, 消費日期, 消費類別, 金額, 備註說明, 狀態]
       const newRowNumber = sheet.getLastRow() + 1;
       sheet.appendRow([timestamp, date, category, amount, note, `🟢 正常 (${timestamp})`]);
-      
-      // 確保樣式無刪除線
       sheet.getRange(newRowNumber, 1, 1, 6).setFontLine('none');
 
-      // 更新即時統計看板
       ensureDashboard(sheet);
 
       return responseJSON({
@@ -229,9 +236,6 @@ function doPost(e) {
   }
 }
 
-// -----------------------------------------------------------------
-// 輔助函式：確保標題列具備「狀態」欄位
-// -----------------------------------------------------------------
 function ensureHeadersAndStatus(sheet) {
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(['時間戳記', '消費日期', '消費類別', '金額', '備註說明', '狀態 (新增/刪除)']);
@@ -242,7 +246,6 @@ function ensureHeadersAndStatus(sheet) {
   const firstRow = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 6)).getValues()[0];
   const hasStatus = firstRow.some(h => String(h).includes('狀態'));
   if (!hasStatus) {
-    // 在第 6 欄補上狀態標題
     sheet.getRange(1, 6).setValue('狀態 (新增/刪除)').setFontWeight('bold').setBackground('#E2E8F0');
   }
 }
@@ -255,21 +258,14 @@ function getStatusColumnIndex(sheet) {
   return 6;
 }
 
-// -----------------------------------------------------------------
-// 輔助函式：在試算表右側建立「📊 即時消費統計看板」
-// -----------------------------------------------------------------
 function ensureDashboard(sheet) {
   try {
-    // 看板設置於 H 欄與 I 欄 (第 8, 9 欄)
     const startCol = 8;
-    
-    // 檢查看板是否已經建立過標題
     const titleVal = sheet.getRange(1, startCol).getValue();
     if (titleVal === '📊 消費即時統計看板') {
-      return; // 已建立，公式會自動動態計算，無需重複覆寫
+      return;
     }
 
-    // 建立看板標題
     sheet.getRange(1, startCol, 1, 2)
       .merge()
       .setValue('📊 消費即時統計看板')
@@ -279,8 +275,6 @@ function ensureDashboard(sheet) {
       .setFontColor('#FFFFFF')
       .setHorizontalAlignment('center');
 
-    // 看板項目與動態公式 (只統計狀態未被刪除的有效項目)
-    // 假設 D 欄為金額、C 欄為類別、F 欄為狀態
     const dashboardItems = [
       ['💰 累積總支出', '=SUMIF(F2:F, "<>*已刪除*", D2:D)'],
       ['📝 有效總筆數', '=COUNTIF(F2:F, "<>*已刪除*")'],
@@ -298,21 +292,13 @@ function ensureDashboard(sheet) {
       sheet.getRange(rowIdx, startCol + 1).setFormula(dashboardItems[r][1]).setFontWeight('bold').setFontColor('#0F172A').setHorizontalAlignment('right');
     }
 
-    // 設定總金額格式為貨幣或千分位
     sheet.getRange(2, startCol + 1).setNumberFormat('"NT$"#,##0').setFontColor('#059669').setFontSize(12);
-    // 食衣住行育樂數字格式
     sheet.getRange(4, startCol + 1, 6, 1).setNumberFormat('"NT$"#,##0');
-
-    // 邊框修飾
     sheet.getRange(1, startCol, dashboardItems.length + 1, 2).setBorder(true, true, true, true, true, true, '#CBD5E1', SpreadsheetApp.BorderStyle.SOLID);
   } catch (err) {
-    // 避免看板建立錯誤影響主流程
   }
 }
 
-// -----------------------------------------------------------------
-// 智慧選擇目標工作表 (優先選取表單回應分頁)
-// -----------------------------------------------------------------
 function getTargetSheet(ss) {
   const sheets = ss.getSheets();
   if (sheets.length === 1) return sheets[0];
@@ -337,7 +323,7 @@ function getTargetSheet(ss) {
   return target;
 }
 
-// 日期標準化
+// 嚴格日期標準化，絕不產生 Sun 或錯誤字串
 function normalizeDate(raw) {
   if (!raw) return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
   
@@ -355,17 +341,13 @@ function normalizeDate(raw) {
   }
 
   const parsed = new Date(str);
-  if (!isNaN(parsed.getTime())) {
-    const y = parsed.getFullYear();
-    const m = String(parsed.getMonth() + 1).padStart(2, '0');
-    const d = String(parsed.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+  if (!isNaN(parsed.getTime()) && parsed.getFullYear() > 2000) {
+    return Utilities.formatDate(parsed, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   }
 
-  return str.split(' ')[0].replace(/\//g, '-');
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
 
-// 類別模糊比對
 function normalizeCategory(raw) {
   if (!raw) return '食';
   const str = String(raw).trim();
