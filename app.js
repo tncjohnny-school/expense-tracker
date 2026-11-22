@@ -835,6 +835,51 @@ function initModal() {
     exportDataAsJSON();
   });
 
+  // 清空 Google 雲端試算表所有資料
+  const btnClearCloud = document.getElementById('btn-clear-cloud-sheet');
+  if (btnClearCloud) {
+    btnClearCloud.addEventListener('click', async () => {
+      if (!cloudConfig.gasUrl) {
+        showToast('尚未設定 Google Apps Script 網址，無法操作雲端試算表！', 'error');
+        return;
+      }
+
+      const confirmFirst = confirm('⚠️ 確定要清空 Google 試算表中的「所有消費紀錄」嗎？\n\n此操作將會清空試算表第 2 列之後的所有資料，此動作無法復原！');
+      if (!confirmFirst) return;
+
+      const confirmDouble = confirm('🚨 再次確認：真的要清空 Google 雲端試算表全部資料嗎？\n（確定後將同步歸零總金額看板與本機資料）');
+      if (!confirmDouble) return;
+
+      showToast('正在請求清空 Google 試算表資料中...', 'info');
+
+      try {
+        const res = await fetch(cloudConfig.gasUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: 'clear_all' })
+        });
+        const result = await res.json();
+
+        if (result && result.success) {
+          // 清空本地陣列與已刪除黑名單
+          expenses = [];
+          deletedKeys.clear();
+          localStorage.setItem(STORAGE_INIT_KEY, 'true');
+          saveData();
+          saveDeletedKeys();
+          renderAll();
+          closeSettingsModal();
+          showToast(`🎉 ${result.message || '已成功清空 Google 試算表全部資料！'}`, 'success');
+        } else {
+          showToast('清空失敗：' + (result.error || result.message || '未知錯誤'), 'error');
+        }
+      } catch (err) {
+        console.error('清空試算表失敗:', err);
+        showToast('清空請求失敗，請確認 Apps Script 權限與連線！', 'error');
+      }
+    });
+  }
+
   document.getElementById('btn-clear-all').addEventListener('click', () => {
     if (confirm('警告：確定要清空所有記帳資料嗎？此操作無法還原！')) {
       // 將當前所有紀錄加入已刪除清單
